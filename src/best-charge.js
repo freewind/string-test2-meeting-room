@@ -1,23 +1,24 @@
+let _ = require('lodash');
 let loadAllItems = require('./items');
 let loadPromotions = require('./promotions');
 
 function bestCharge(selectedItems) {
   let countedIds = countIds(selectedItems);
   let allItems = loadAllItems();
-  let cartItems = buildCartItems(countedIds,allItems);
+  let cartItems = buildCartItems(countedIds, allItems);
   let promotions = loadPromotions();
-  let promotedItems = buildPromotions(cartItems,promotions);
-  let totalPrice = calculateTotalPrices(promotedItems);
-
-  let chosenTypePrice = chooseType(totalPrice,promotions);
-  let receipt = buildReceipt(promotedItems,chosenTypePrice);
-  let receiptString = buildReceiptString(receipt);
+  let triedPromotions = [
+    tryPromotionHalfPrice(cartItems, promotions),
+    tryPromotionWhen30Minus6(cartItems, promotions)
+  ];
+  let bestPromotionResult = findBestPromotionResult(triedPromotions);
+  let receiptString = buildReceiptString(bestPromotionResult);
 
   return receiptString;
 }
 
 function countIds(tags) {
-  return tags.map((tag) => {
+  return _.map(tags, (tag) => {
     let [id,count] = tag.split(' x ');
     return {id, count: parseFloat(count)};
   });
@@ -28,78 +29,84 @@ function _getExistElementByIds(array, id) {
 }
 
 function buildCartItems(countedIds, allItems) {
-  return countedIds.map(({id, count}) => {
+  return _.map(countedIds, ({id, count}) => {
     let {name, price} = _getExistElementByIds(allItems, id);
     return {id, name, price, count};
   })
 }
 
-function buildPromotions(cartItems, promotions) {
-  let halfPrice = promotions.find((promotion) => promotion.type === '指定菜品半价');
-  return cartItems.map((cartItem) => {
-    let hasHalf = halfPrice.items.includes(cartItem.id);
-    let saved = hasHalf ? cartItem.price / 2 * cartItem.count : 0;
-    let payPrice = cartItem.price * cartItem.count - saved;
+function tryPromotionHalfPrice(cartItems, promotions) {
+  let promotionType = '指定菜品半价';
+  let promotion = promotions.find((promotion) => promotion.type === promotionType);
+  if (promotion === null) return null;
+
+  let calculatedItems = cartItems.map((cartItem) => {
+    let canPromote = promotion.items.includes(cartItem.id);
+    let saved = canPromote ? cartItem.price / 2 * cartItem.count : 0;
+    let totalPrice = cartItem.price * cartItem.count;
+    let payPrice = totalPrice - saved;
     return Object.assign({}, cartItem, {
-      payPrice, saved
+      totalPrice, payPrice, saved
     });
   });
+  let promotedItemNames = _(calculatedItems)
+    .filter(calculatedItem => calculatedItem.saved > 0)
+    .map(calculatedItem => calculatedItem.name)
+    .value();
+  let totalPayPrice = _(calculatedItems).map(calculatedItem=>calculatedItem.payPrice).sum();
+  let totalSaved = _(calculatedItems).map(calculatedItem=>calculatedItem.saved).sum();
+  return {
+    calculatedItems, promotedItemNames, totalPayPrice, totalSaved, promotionType
+  };
 }
 
-function calculateTotalPrices(promotedItems) {
-  return promotedItems.reduce((result, promotedItem)=> {
-    debugger;
-    result.totalPayPrice += promotedItem.payPrice;
-    result.totalSaved += promotedItem.saved;
-    return result;
-  }, {totalPayPrice: 0, totalSaved: 0})
+function tryPromotionWhen30Minus6(cartItems, promotions) {
+  let promotionType = '满30减6元';
+  let promotion = promotions.find((promotion) => promotion.type === promotionType);
+  if (promotion === null) return null;
+
+  let calculatedItems = _.map(cartItems, cartItem => {
+    let totalPrice = cartItem.price * cartItem.count;
+    return Object.assign({}, cartItem, {
+      totalPrice, payPrice: totalPrice, saved: 0
+    })
+  });
+  let totalPrice = _(cartItems).map(({price, count}) => price * count).sum();
+  let totalSaved = totalPrice >= 30 ? 6 : 0;
+  let totalPayPrice = totalPrice - totalSaved;
+  return {
+    calculatedItems, promotedItemNames: [],
+    totalPayPrice, totalSaved, promotionType
+  };
 }
 
-function chooseType({totalPayPrice,totalSaved},promotions) {
-  let total = totalPayPrice+totalSaved;
-  let reachPromotion = total>=30 ? 6 :0;
-  let reachPromotionString = promotions.find((promotion) => promotion.type === '满30减6元').type;
-  let halfPriceString = promotions.find((promotion) => promotion.type === '指定菜品半价').type;
-  if(reachPromotion === 0){
-    return {
-      totalPayPrice:totalPayPrice,
-      totalSaved:totalSaved,
-      chosenType:''
+function findBestPromotionResult(triedPromotions) {
+  return _.minBy(triedPromotions, ({totalPayPrice}) => totalPayPrice);
+}
+
+function buildReceiptString(promotionResult) {
+  let lines = ['============= 订餐明细 ============='];
+  _.reduce(promotionResult.calculatedItems, (lines, {name, count, totalPrice}) => {
+    lines.push(`${name} x ${count} = ${totalPrice}元`);
+    return lines;
+  }, lines);
+  if (promotionResult.totalSaved > 0) {
+    lines.push('-----------------------------------');
+    lines.push('使用优惠:');
+    let line = promotionResult.promotionType;
+    if (promotionResult.promotedItemNames.length > 0) {
+      line += "(" + promotionResult.promotedItemNames.join('，') + ")";
     }
-  }else if(reachPromotion > totalSaved){
-    return {
-      totalPayPrice:totalPayPrice+totalSaved-6,
-      totalSaved:6,
-      chosenType:reachPromotionString
-    }
-  }else {
-    return {
-      totalPayPrice:totalPayPrice,
-      totalSaved:totalSaved,
-      chosenType:halfPriceString
-    }
+    line += `，省${promotionResult.totalSaved}元`;
+    lines.push(line);
   }
 
-}
-
-function buildReceipt(promotedItems,{totalPayPrice,totalSaved,chosenType}) {
-  let receiptArray =[];
-  for(let promotedItem of promotedItems){
-      receiptArray.push({
-        name:promotedItem.name,
-        price:promotedItem.price,
-        count:promotedItem.count,
-        payPrice:promotedItem.payPrice,
-        saved:promotedItem.saved
-      });
-  }
-  return {receiptItems:receiptArray,totalPayPrice,totalSaved,chosenType};
-}
-
-function buildReceiptString(receipt) {
-  // TODO
+  lines.push('-----------------------------------');
+  lines.push(`总计：${promotionResult.totalPayPrice}元`);
+  lines.push('===================================');
+  return lines.join('\n');
 }
 
 module.exports = {
-  bestCharge, buildReceipt, chooseType, calculateTotalPrices, buildPromotions, buildCartItems, countIds
-}
+  bestCharge, tryPromotionHalfPrice, buildCartItems, countIds
+};
